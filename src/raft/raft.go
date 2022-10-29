@@ -50,6 +50,13 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
+type LogEntry struct{
+        // command for state machine
+        // term when entry was received by leader (first index is 1)
+        command  interface{}
+        termReceivedByLeader int
+}
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -64,11 +71,24 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
+        // persistent state
+        currentTerm int
+        votedFor    int
+        log         []LogEntry
+        // volatile state
+        commitIndex int
+        lastApplied int
+        // leaders
+        nextIndex   []int
+        matchIndex  []int
+
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
+        rf.mu.Lock()
+        defer rf.mu.Unlock()
 
 	var term int
 	var isleader bool
@@ -142,7 +162,10 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
+        Term         int
+        CandidateId  int
+        LastLogIndex int
+        LastLogTerm  int
 }
 
 //
@@ -150,14 +173,41 @@ type RequestVoteArgs struct {
 // field names must start with capital letters!
 //
 type RequestVoteReply struct {
-	// Your data here (2A).
+        Term        int
+        VoteGranted bool
 }
 
 //
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (2A, 2B).
+        rf.mu.Lock()
+        defer rf.mu.Unlock()
+
+        reply.Term =        rf.currentTerm
+        reply.VoteGranted = false
+
+        // (1) don't grant if term < currentTerm (§5.1)
+        if args.Term < rf.currentTerm{
+            return
+        }
+
+        // (2) If votedFor is null or candidateId, and candidate’s log is at least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
+        haventVotedSomeoneElse := rf.votedFor == -1 || rf.votedFor == args.CandidateId
+
+        myLastLogIdx := len(rf.log)
+        myLastLogTerm := rf.log[myLastLogIdx-1].termReceivedByLeader
+
+        candidateLastLogIdx := args.LastLogIndex
+        candidateLastLogTerm := args.LastLogTerm
+
+        candidateLogNotBehind := (candidateLastLogTerm > myLastLogTerm) ||
+                                 ((candidateLastLogTerm == myLastLogTerm) && candidateLastLogIdx >= myLastLogIdx)
+
+        if (candidateLogNotBehind && haventVotedSomeoneElse) {
+            reply.VoteGranted = true
+            rf.votedFor = args.CandidateId
+        }
 }
 
 //
@@ -272,6 +322,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
+        rf.votedFor = -1
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
