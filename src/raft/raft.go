@@ -38,6 +38,13 @@ import (
 // snapshots) on the applyCh, but set CommandValid to false for these
 // other uses.
 //
+type State int
+const (
+	Follower State = iota
+	Candidate
+	Leader
+)
+
 type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
@@ -71,6 +78,8 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
+        state     State
+
         // persistent state
         currentTerm int
         votedFor    int
@@ -92,6 +101,9 @@ func (rf *Raft) GetState() (int, bool) {
 
 	var term int
 	var isleader bool
+
+        term = rf.currentTerm
+        isleader = rf.state == Leader
 	// Your code here (2A).
 	return term, isleader
 }
