@@ -18,9 +18,12 @@ package raft
 //
 
 import (
+	"fmt"
 	//	"bytes"
 	"sync"
 	"sync/atomic"
+	"time"
+	"math/rand"
 
 	//	"6.824/labgob"
 	"6.824/labrpc"
@@ -38,6 +41,12 @@ import (
 // snapshots) on the applyCh, but set CommandValid to false for these
 // other uses.
 //
+
+// election timeout and sleep range in ms
+const ELECTION_TIMEOUT = 1000
+const MIN_SLEEP_INTERVAL = 1000
+const MAX_SLEEP_INTERVAL = 1500
+
 type State int
 const (
 	Follower State = iota
@@ -78,7 +87,8 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
-        state     State
+        state                  State
+        lastHeartbeatTimestamp time.Time
 
         // persistent state
         currentTerm int
@@ -189,6 +199,22 @@ type RequestVoteReply struct {
         VoteGranted bool
 }
 
+
+// returns index and term of last log entry
+// or (-1, -1) if log is empty
+// assumes caller acquired lock on rf
+func (rf *Raft) GetLastLogEntryInfo() (int, int) {
+	var lastLogIdx, lastLogTerm int
+	if (len(rf.log) > 0) {
+	    lastLogIdx = len(rf.log) - 1
+	    lastLogTerm = rf.log[lastLogIdx].termReceivedByLeader
+	} else {
+	    lastLogIdx = -1
+	    lastLogTerm = -1
+	}
+	return lastLogIdx, lastLogTerm
+}
+
 //
 // example RequestVote RPC handler.
 //
@@ -207,8 +233,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
         // (2) If votedFor is null or candidateId, and candidate’s log is at least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
         haventVotedSomeoneElse := rf.votedFor == -1 || rf.votedFor == args.CandidateId
 
-        myLastLogIdx := len(rf.log)
-        myLastLogTerm := rf.log[myLastLogIdx-1].termReceivedByLeader
+        myLastLogIdx, myLastLogTerm := rf.GetLastLogEntryInfo()
 
         candidateLastLogIdx := args.LastLogIndex
         candidateLastLogTerm := args.LastLogTerm
@@ -217,6 +242,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
                                  ((candidateLastLogTerm == myLastLogTerm) && candidateLastLogIdx >= myLastLogIdx)
 
         if (candidateLogNotBehind && haventVotedSomeoneElse) {
+            fmt.Printf("rf %d is granting vote to %d\n", rf.me, args.CandidateId)
             reply.VoteGranted = true
             rf.votedFor = args.CandidateId
         }
@@ -252,6 +278,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // the struct itself.
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	fmt.Printf("rf %d is making RPC request vote call to %d\n", rf.me, server)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
@@ -307,10 +334,52 @@ func (rf *Raft) killed() bool {
 // heartsbeats recently.
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
+            if time.Since(rf.lastHeartbeatTimestamp).Milliseconds() > ELECTION_TIMEOUT{
+                rf.mu.Lock()
+                fmt.Printf("rf %d converted to candidate at %v\n", rf.me, time.Now())
+                // convert to candidate and start election
+                rf.state = Candidate
+                rf.currentTerm += 1
+                rf.votedFor = rf.me
+                rf.lastHeartbeatTimestamp = time.Now()
+                // args for RequestVote RPC
+                lastLogIdx, lastLogTerm := rf.GetLastLogEntryInfo()
+                args := RequestVoteArgs{}
+                args.Term = rf.currentTerm
+                args.CandidateId = rf.me
+                args.LastLogIndex = lastLogIdx
+                args.LastLogTerm = lastLogTerm
+                // request from all other servers
+                numServers := len(rf.peers)
+                var wg sync.WaitGroup  // TODO find a better sync primitive: check every time there's a new vote
+                count := 1
+                for server := 0; server < numServers; server++ {
+                    if (server == rf.me) {
+                        continue
+                    }
+		    reply := RequestVoteReply{}
+		    wg.Add(1)
+		    go func(server int, args RequestVoteArgs, reply RequestVoteReply) {
+                        defer wg.Done()
+                        rf.sendRequestVote(server, &args, &reply)
+                        if (reply.VoteGranted) {
+                            count += 1
+                        }
+		    }(server, args, reply)
+                }
+                wg.Wait()
+                fmt.Printf("candidate %d has %d votes\n", rf.me, count)
+                if count > len(rf.peers) / 2 {
+                    rf.state = Leader
+                } else{
+                    rf.state = Follower
+                }
+                rf.mu.Unlock()
+            }
+            randomSleep := rand.Intn(MAX_SLEEP_INTERVAL - MIN_SLEEP_INTERVAL) + MIN_SLEEP_INTERVAL
+            time.Sleep(time.Duration(randomSleep) * time.Millisecond)
 
-		// Your code here to check if a leader election should
-		// be started and to randomize sleeping time using
-		// time.Sleep().
+
 
 	}
 }
@@ -333,9 +402,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.persister = persister
 	rf.me = me
 
-	// Your initialization code here (2A, 2B, 2C).
-        rf.votedFor = -1
-
+	rf.votedFor = -1
+	rf.lastHeartbeatTimestamp = time.Now()
+	fmt.Printf("initialized rf %d with lastHeartbeatTimestamp %v\n", rf.me, rf.lastHeartbeatTimestamp)
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
