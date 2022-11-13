@@ -358,52 +358,57 @@ func (rf *Raft) killed() bool {
 // heartsbeats recently.
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
-            if time.Since(rf.lastHeartbeatTimestamp).Milliseconds() > ELECTION_TIMEOUT{
-                rf.mu.Lock()
-                fmt.Printf("rf %d converted to candidate at %v\n", rf.me, time.Now())
-                // convert to candidate and start election
-                rf.state = Candidate
-                rf.currentTerm += 1
-                rf.votedFor = rf.me
-                rf.lastHeartbeatTimestamp = time.Now()
-                // args for RequestVote RPC
-                lastLogIdx, lastLogTerm := rf.GetLastLogEntryInfo()
-                args := RequestVoteArgs{}
-                args.Term = rf.currentTerm
-                args.CandidateId = rf.me
-                args.LastLogIndex = lastLogIdx
-                args.LastLogTerm = lastLogTerm
-                // request from all other servers
-                numServers := len(rf.peers)
-                var wg sync.WaitGroup  // TODO find a better sync primitive: check every time there's a new vote
-                count := 1
-                for server := 0; server < numServers; server++ {
-                    if (server == rf.me) {
-                        continue
-                    }
-		    reply := RequestVoteReply{}
-		    wg.Add(1)
-		    go func(server int, args RequestVoteArgs, reply RequestVoteReply) {
-                        defer wg.Done()
-                        rf.sendRequestVote(server, &args, &reply)
-                        if (reply.VoteGranted) {
-                            count += 1
-                        }
-		    }(server, args, reply)
-                }
-                wg.Wait()
-                fmt.Printf("candidate %d has %d votes\n", rf.me, count)
-                if count > len(rf.peers) / 2 {
-                    rf.state = Leader
-                } else{
-                    rf.state = Follower
-                }
-                rf.mu.Unlock()
-            }
-            randomSleep := rand.Intn(MAX_SLEEP_INTERVAL - MIN_SLEEP_INTERVAL) + MIN_SLEEP_INTERVAL
-            time.Sleep(time.Duration(randomSleep) * time.Millisecond)
-
-
+		amLeader := rf.state == Leader
+		if !amLeader && time.Since(rf.lastHeartbeatTimestamp).Milliseconds() > ELECTION_TIMEOUT{
+			rf.mu.Lock()
+			DPrintf("rf %d converted to candidate at %v\n", rf.me, time.Now())
+			// convert to candidate and start election
+			rf.state = Candidate
+			rf.currentTerm += 1
+			rf.votedFor = rf.me
+			rf.lastHeartbeatTimestamp = time.Now()
+			// args for RequestVote RPC
+			lastLogIdx, lastLogTerm := rf.GetLastLogEntryInfo()
+			args := RequestVoteArgs{}
+			args.Term = rf.currentTerm
+			args.CandidateId = rf.me
+			args.LastLogIndex = lastLogIdx
+			args.LastLogTerm = lastLogTerm
+			// request from all other servers
+			numServers := len(rf.peers)
+			ch := make(chan bool)
+			for server := 0; server < numServers; server++ {
+				if (server == rf.me) {
+					continue
+				}
+				reply := RequestVoteReply{}
+				go func(server int, args RequestVoteArgs, reply RequestVoteReply) {
+					rf.sendRequestVote(server, &args, &reply)
+					ch <- reply.VoteGranted
+					DPrintf("[%d election] got response from RequestVote RPC call to %d\n", rf.me, server)
+				}(server, args, reply)
+			}
+			resultsReceived := 0
+			votesWon := 1 // self-vote
+			for (resultsReceived < len(rf.peers) - 1) && (votesWon <= len(rf.peers)/2){
+				newResult := <-ch
+				resultsReceived += 1
+				if newResult {
+					votesWon += 1
+				}
+			}
+			DPrintf("candidate %d has %d votes\n", rf.me, votesWon)
+			if votesWon > len(rf.peers) / 2 {
+				rf.state = Leader
+			} else{
+				rf.state = Follower
+			}
+			rf.mu.Unlock()
+		}
+		randomSleep := rand.Intn(MAX_SLEEP_INTERVAL - MIN_SLEEP_INTERVAL) + MIN_SLEEP_INTERVAL
+		time.Sleep(time.Duration(randomSleep) * time.Millisecond)
+	}
+}
 
 	}
 }
