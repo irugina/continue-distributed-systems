@@ -56,7 +56,7 @@ const (
 
 type ApplyMsg struct {
 	CommandValid bool
-	Command      interface{}
+	Command	     interface{}
 	CommandIndex int
 
 	// For 2D:
@@ -67,10 +67,10 @@ type ApplyMsg struct {
 }
 
 type LogEntry struct{
-        // command for state machine
-        // term when entry was received by leader (first index is 1)
-        command  interface{}
-        termReceivedByLeader int
+	// command for state machine
+	// term when entry was received by leader (first index is 1)
+	Command  interface{}
+	TermReceivedByLeader int
 }
 
 //
@@ -81,39 +81,39 @@ type Raft struct {
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
-	dead      int32               // set by Kill()
+	dead      int32	              // set by Kill()
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
-        state                  State
-        lastHeartbeatTimestamp time.Time
+	state                  State
+	lastHeartbeatTimestamp time.Time
 
-        // persistent state
-        currentTerm int
-        votedFor    int
-        log         []LogEntry
-        // volatile state
-        commitIndex int
-        lastApplied int
-        // leaders
-        nextIndex   []int
-        matchIndex  []int
+	// persistent state
+	currentTerm int
+	votedFor    int
+	log	        []LogEntry
+	// volatile state
+	commitIndex int
+	lastApplied int
+	// leaders
+	nextIndex   []int
+	matchIndex  []int
 
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-        rf.mu.Lock()
-        defer rf.mu.Unlock()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
 	var term int
 	var isleader bool
 
-        term = rf.currentTerm
-        isleader = rf.state == Leader
+	term = rf.currentTerm
+	isleader = rf.state == Leader
 	// Your code here (2A).
 	return term, isleader
 }
@@ -178,16 +178,15 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
-        Term         int
-        CandidateId  int
-        LastLogIndex int
-        LastLogTerm  int
+	Term	     int
+	CandidateId  int
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 //
@@ -195,10 +194,9 @@ type RequestVoteArgs struct {
 // field names must start with capital letters!
 //
 type RequestVoteReply struct {
-        Term        int
-        VoteGranted bool
+	Term        int
+	VoteGranted bool
 }
-
 
 // returns index and term of last log entry
 // or (-1, -1) if log is empty
@@ -206,11 +204,11 @@ type RequestVoteReply struct {
 func (rf *Raft) GetLastLogEntryInfo() (int, int) {
 	var lastLogIdx, lastLogTerm int
 	if (len(rf.log) > 0) {
-	    lastLogIdx = len(rf.log) - 1
-	    lastLogTerm = rf.log[lastLogIdx].termReceivedByLeader
+		lastLogIdx = len(rf.log) - 1
+		lastLogTerm = rf.log[lastLogIdx].TermReceivedByLeader
 	} else {
-	    lastLogIdx = -1
-	    lastLogTerm = -1
+		lastLogIdx = -1
+		lastLogTerm = -1
 	}
 	return lastLogIdx, lastLogTerm
 }
