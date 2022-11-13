@@ -410,6 +410,28 @@ func (rf *Raft) ticker() {
 	}
 }
 
+func (rf *Raft) sendHeartbeats() {
+	for rf.killed() == false {
+		rf.mu.Lock()
+		amLeader := rf.state == Leader
+		if amLeader {
+            numServers := len(rf.peers)
+			for server := 0; server < numServers; server++ {
+				if (server == rf.me) {
+					continue
+				}
+				args := AppendEntriesArgs{}
+				args.Term = rf.currentTerm
+				args.LeaderId = rf.me
+				reply := AppendEntriesReply{}
+				go func(server int, args AppendEntriesArgs, reply AppendEntriesReply) {
+					// DPrintf("rf %d is sending heartbeat to %d\n", rf.me, server)
+					rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
+				}(server, args, reply)
+			}
+		}
+        rf.mu.Unlock()
+		time.Sleep(time.Duration(HEARTBEAT_INTERVAL) * time.Millisecond)
 	}
 }
 
@@ -433,12 +455,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.votedFor = -1
 	rf.lastHeartbeatTimestamp = time.Now()
-	fmt.Printf("initialized rf %d with lastHeartbeatTimestamp %v\n", rf.me, rf.lastHeartbeatTimestamp)
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
+	// start heartbeat goroutine
+	go rf.sendHeartbeats()
 
 
 	return rf
