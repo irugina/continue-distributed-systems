@@ -18,7 +18,6 @@ package raft
 //
 
 import (
-	"fmt"
 	//	"bytes"
 	"sync"
 	"sync/atomic"
@@ -46,6 +45,7 @@ import (
 const ELECTION_TIMEOUT = 1000
 const MIN_SLEEP_INTERVAL = 1000
 const MAX_SLEEP_INTERVAL = 1500
+const HEARTBEAT_INTERVAL = 110 //send heartbeat RPCs no more than ten times per second.
 
 type State int
 const (
@@ -217,33 +217,59 @@ func (rf *Raft) GetLastLogEntryInfo() (int, int) {
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-        rf.mu.Lock()
-        defer rf.mu.Unlock()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
-        reply.Term =        rf.currentTerm
-        reply.VoteGranted = false
+	reply.Term =		rf.currentTerm
+	reply.VoteGranted = false
 
-        // (1) don't grant if term < currentTerm (§5.1)
-        if args.Term < rf.currentTerm{
-            return
-        }
+	// (1) don't grant if term < currentTerm (§5.1)
+	if args.Term < rf.currentTerm{
+		return
+	}
 
-        // (2) If votedFor is null or candidateId, and candidate’s log is at least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
-        haventVotedSomeoneElse := rf.votedFor == -1 || rf.votedFor == args.CandidateId
+	// (2) If votedFor is null or candidateId, and candidate’s log is at least as up-to-date as receiver’s log, grant vote (§5.2, §5.4, last paragraph of 5.4.1)
+	haventVotedSomeoneElse := rf.votedFor == -1 || rf.votedFor == args.CandidateId
 
-        myLastLogIdx, myLastLogTerm := rf.GetLastLogEntryInfo()
+	myLastLogIdx, myLastLogTerm := rf.GetLastLogEntryInfo()
 
-        candidateLastLogIdx := args.LastLogIndex
-        candidateLastLogTerm := args.LastLogTerm
+	candidateLastLogIdx := args.LastLogIndex
+	candidateLastLogTerm := args.LastLogTerm
 
-        candidateLogNotBehind := (candidateLastLogTerm > myLastLogTerm) ||
-                                 ((candidateLastLogTerm == myLastLogTerm) && candidateLastLogIdx >= myLastLogIdx)
+	candidateLogNotBehind := (candidateLastLogTerm > myLastLogTerm) ||
+		((candidateLastLogTerm == myLastLogTerm) && candidateLastLogIdx >= myLastLogIdx)
 
-        if (candidateLogNotBehind && haventVotedSomeoneElse) {
-            fmt.Printf("rf %d is granting vote to %d\n", rf.me, args.CandidateId)
-            reply.VoteGranted = true
-            rf.votedFor = args.CandidateId
-        }
+	if (candidateLogNotBehind && haventVotedSomeoneElse) {
+		DPrintf("rf %d is granting vote to %d\n", rf.me, args.CandidateId)
+		reply.VoteGranted = true
+		rf.votedFor = args.CandidateId
+	}
+}
+
+//
+// Append Entries args and reply structures
+//
+type AppendEntriesArgs  struct {
+	Term		 int
+	LeaderId	 int
+	PrevLogIndex int
+	PrevLogTerm  int
+	Entries      []LogEntry
+	LeaderCommit int
+}
+
+type AppendEntriesReply struct{
+	Term	 int
+	Success bool
+}
+
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply){
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if args.Term > rf.currentTerm{
+		rf.currentTerm = args.Term
+	}
+	rf.lastHeartbeatTimestamp = time.Now()
 }
 
 //
@@ -276,7 +302,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // the struct itself.
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	fmt.Printf("rf %d is making RPC request vote call to %d\n", rf.me, server)
+	DPrintf("rf %d is making RPC request vote call to %d\n", rf.me, server)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
