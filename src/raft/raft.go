@@ -268,6 +268,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 	if args.Term > rf.currentTerm{
 		rf.currentTerm = args.Term
+		rf.votedFor = -1
+		rf.state = Follower
 	}
 	rf.lastHeartbeatTimestamp = time.Now()
 }
@@ -385,7 +387,6 @@ func (rf *Raft) ticker() {
 				go func(server int, args RequestVoteArgs, reply RequestVoteReply) {
 					rf.sendRequestVote(server, &args, &reply)
 					ch <- reply.VoteGranted
-					DPrintf("[%d election] got response from RequestVote RPC call to %d\n", rf.me, server)
 				}(server, args, reply)
 			}
 			resultsReceived := 0
