@@ -219,7 +219,7 @@ func (rf *Raft) GetLastLogEntryInfo() (int, int) {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("server %d received request to grant vote to %d", rf.me, args.CandidateId)
+	// DPrintf("server %d received request to grant vote to %d", rf.me, args.CandidateId)
 
 	reply.Term =		rf.currentTerm
 	reply.VoteGranted = false
@@ -241,7 +241,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		((candidateLastLogTerm == myLastLogTerm) && candidateLastLogIdx >= myLastLogIdx)
 
 	if (candidateLogNotBehind && haventVotedSomeoneElse) {
-		DPrintf("rf %d is granting vote to %d\n", rf.me, args.CandidateId)
+		// DPrintf("rf %d is granting vote to %d\n", rf.me, args.CandidateId)
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
 	}
@@ -305,7 +305,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 // the struct itself.
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	DPrintf("rf %d is making RPC request vote call to %d\n", rf.me, server)
+	// DPrintf("rf %d is making RPC request vote call to %d\n", rf.me, server)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
@@ -364,7 +364,7 @@ func (rf *Raft) ticker() {
 		rf.mu.Lock()
 		amLeader := rf.state == Leader
 		if !amLeader && time.Since(rf.lastHeartbeatTimestamp).Milliseconds() > ELECTION_TIMEOUT{
-			DPrintf("rf %d converted to candidate at %v\n", rf.me, time.Now())
+			DPrintf("rf %d converted to candidate\n", rf.me)
 			// convert to candidate and start election
 			rf.state = Candidate
 			rf.currentTerm += 1
@@ -390,9 +390,10 @@ func (rf *Raft) ticker() {
 					ch <- reply.VoteGranted
 				}(server, args, reply)
 			}
+			// release lock and listen on channel for votes
+			rf.mu.Unlock()
 			resultsReceived := 0
 			votesWon := 1 // self-vote
-			rf.mu.Unlock()
 			for (resultsReceived < len(rf.peers) - 1) && (votesWon <= len(rf.peers)/2){
 				newResult := <-ch
 				resultsReceived += 1
@@ -400,12 +401,15 @@ func (rf *Raft) ticker() {
 					votesWon += 1
 				}
 			}
+			// see if i won or lost election
 			rf.mu.Lock()
-			DPrintf("candidate %d has %d votes\n", rf.me, votesWon)
+			// DPrintf("candidate %d has %d votes\n", rf.me, votesWon)
 			if votesWon > len(rf.peers) / 2 {
+				DPrintf("candidate %d won, its term is %d", rf.me, rf.currentTerm)
 				rf.state = Leader
 				rf.sendHeartbeats()
 			} else{
+				DPrintf("candidate %d lost", rf.me)
 				rf.state = Follower
 			}
 		}
@@ -466,6 +470,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.state = Follower
 
 	rf.votedFor = -1
 	rf.lastHeartbeatTimestamp = time.Now()
@@ -475,7 +480,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// start ticker goroutine to start elections
 	go rf.ticker()
 	// start heartbeat goroutine
-	go rf.sendHeartbeats()
+	go rf.heartbeats()
 
 
 	return rf
