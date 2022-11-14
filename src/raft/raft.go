@@ -226,11 +226,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	// (1) don't grant if term < currentTerm (§5.1)
 	if args.Term < rf.currentTerm{
+		DPrintf("rf %d is NOT granting vote to %d (bc of current term)\n", rf.me, args.CandidateId)
 		return
 	}
 
 	// (2) If votedFor is null or candidateId, and candidate’s log is at least as up-to-date as receiver’s log, grant vote (§5.2, §5.4, last paragraph of 5.4.1)
 	haventVotedSomeoneElse := rf.votedFor == -1 || rf.votedFor == args.CandidateId
+
+	if !haventVotedSomeoneElse{
+		DPrintf("rf %d is NOT granting vote to %d (voted for %d)\n", rf.me, args.CandidateId, rf.votedFor)
+	}
 
 	myLastLogIdx, myLastLogTerm := rf.GetLastLogEntryInfo()
 
@@ -240,8 +245,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	candidateLogNotBehind := (candidateLastLogTerm > myLastLogTerm) ||
 		((candidateLastLogTerm == myLastLogTerm) && candidateLastLogIdx >= myLastLogIdx)
 
+	if !candidateLogNotBehind{
+		DPrintf("rf %d is NOT granting vote to %d (log is behind)\n", rf.me, args.CandidateId)
+	}
+
 	if (candidateLogNotBehind && haventVotedSomeoneElse) {
-		// DPrintf("rf %d is granting vote to %d\n", rf.me, args.CandidateId)
+		DPrintf("rf %d is granting vote to %d\n", rf.me, args.CandidateId)
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
 	}
@@ -390,15 +399,25 @@ func (rf *Raft) ticker() {
 					ch <- reply.VoteGranted
 				}(server, args, reply)
 			}
-			// release lock and listen on channel for votes
+			// release lock and listen on ch for votes, with timeout
 			rf.mu.Unlock()
 			resultsReceived := 0
 			votesWon := 1 // self-vote
-			for (resultsReceived < len(rf.peers) - 1) && (votesWon <= len(rf.peers)/2){
-				newResult := <-ch
-				resultsReceived += 1
-				if newResult {
-					votesWon += 1
+			timeout := make(chan bool, 1)
+			go func() {
+				time.Sleep(1 * time.Second)
+				timeout <- true
+			}()
+			timedOut := false
+			for (resultsReceived < len(rf.peers) - 1 && votesWon <= len(rf.peers)/2 && !timedOut){
+				select {
+				case newResult := <-ch:
+					resultsReceived += 1
+					if newResult {
+						votesWon += 1
+					}
+				case <-timeout:
+					timedOut = true
 				}
 			}
 			// see if i won or lost election
@@ -411,6 +430,7 @@ func (rf *Raft) ticker() {
 			} else{
 				DPrintf("candidate %d lost", rf.me)
 				rf.state = Follower
+				rf.votedFor = -1
 			}
 		}
 		rf.mu.Unlock()
