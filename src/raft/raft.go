@@ -219,6 +219,7 @@ func (rf *Raft) GetLastLogEntryInfo() (int, int) {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	DPrintf("server %d received request to grant vote to %d", rf.me, args.CandidateId)
 
 	reply.Term =		rf.currentTerm
 	reply.VoteGranted = false
@@ -360,9 +361,9 @@ func (rf *Raft) killed() bool {
 // heartsbeats recently.
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
+		rf.mu.Lock()
 		amLeader := rf.state == Leader
 		if !amLeader && time.Since(rf.lastHeartbeatTimestamp).Milliseconds() > ELECTION_TIMEOUT{
-			rf.mu.Lock()
 			DPrintf("rf %d converted to candidate at %v\n", rf.me, time.Now())
 			// convert to candidate and start election
 			rf.state = Candidate
@@ -391,6 +392,7 @@ func (rf *Raft) ticker() {
 			}
 			resultsReceived := 0
 			votesWon := 1 // self-vote
+			rf.mu.Unlock()
 			for (resultsReceived < len(rf.peers) - 1) && (votesWon <= len(rf.peers)/2){
 				newResult := <-ch
 				resultsReceived += 1
@@ -398,43 +400,54 @@ func (rf *Raft) ticker() {
 					votesWon += 1
 				}
 			}
+			rf.mu.Lock()
 			DPrintf("candidate %d has %d votes\n", rf.me, votesWon)
 			if votesWon > len(rf.peers) / 2 {
 				rf.state = Leader
+				rf.sendHeartbeats()
 			} else{
 				rf.state = Follower
 			}
-			rf.mu.Unlock()
 		}
+		rf.mu.Unlock()
 		randomSleep := rand.Intn(MAX_SLEEP_INTERVAL - MIN_SLEEP_INTERVAL) + MIN_SLEEP_INTERVAL
 		time.Sleep(time.Duration(randomSleep) * time.Millisecond)
 	}
 }
 
 func (rf *Raft) sendHeartbeats() {
+	numServers := len(rf.peers)
+	for server := 0; server < numServers; server++ {
+		if (server == rf.me) {
+			continue
+		}
+		args := AppendEntriesArgs{}
+		args.Term = rf.currentTerm
+		args.LeaderId = rf.me
+		reply := AppendEntriesReply{}
+		go func(server int, args AppendEntriesArgs, reply AppendEntriesReply) {
+			// DPrintf("rf %d is sending heartbeat to %d\n", rf.me, server)
+			rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
+		}(server, args, reply)
+	}
+}
+
+//
+// long running goroutine, for leader to send heartbeats
+//
+func (rf *Raft) heartbeats() {
 	for rf.killed() == false {
 		rf.mu.Lock()
 		amLeader := rf.state == Leader
 		if amLeader {
-            numServers := len(rf.peers)
-			for server := 0; server < numServers; server++ {
-				if (server == rf.me) {
-					continue
-				}
-				args := AppendEntriesArgs{}
-				args.Term = rf.currentTerm
-				args.LeaderId = rf.me
-				reply := AppendEntriesReply{}
-				go func(server int, args AppendEntriesArgs, reply AppendEntriesReply) {
-					// DPrintf("rf %d is sending heartbeat to %d\n", rf.me, server)
-					rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
-				}(server, args, reply)
-			}
+			rf.sendHeartbeats()
 		}
         rf.mu.Unlock()
 		time.Sleep(time.Duration(HEARTBEAT_INTERVAL) * time.Millisecond)
 	}
 }
+
+
 
 //
 // the service or tester wants to create a Raft server. the ports
