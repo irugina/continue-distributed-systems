@@ -479,9 +479,7 @@ func (rf *Raft) ticker() {
 				DPrintf("candidate %d won, its term is %d\n", rf.me, rf.currentTerm)
 				rf.state = Leader
 				// release lock, send everyone heartbeats right after winning, reclaim lock
-				rf.mu.Unlock()
 				rf.sendHeartbeats()
-				rf.mu.Lock()
 			} else{
 				DPrintf("candidate %d lost\n", rf.me)
 				rf.state = Follower
@@ -498,10 +496,8 @@ func (rf *Raft) sendHeartbeats() {
 	// send heartbeats to all other servers
 	// called from: (1) long-running sendHeartbeats goroutine
 	//              (2) after a new leader wins election
-	// NOTE: don't hold rf lock before calling this helper fn
+	// NOTE: hold rf lock before calling this helper fn
 	numServers := len(rf.peers)
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	for server := 0; server < numServers; server++ {
 		if (server == rf.me) {
 			continue
