@@ -220,9 +220,18 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	// DPrintf("server %d received request to grant vote to %d", rf.me, args.CandidateId)
+	reply.VoteGranted = false // default
 
-	reply.Term =		rf.currentTerm
-	reply.VoteGranted = false
+	// -------------------------------------------------------------------------------- Rules for all servers
+	currentTerm := rf.currentTerm
+	reply.Term = currentTerm
+	if args.Term > currentTerm {
+		rf.currentTerm = args.Term
+		rf.votedFor = -1
+		rf.state = Follower
+	}
+
+	//  -------------------------------------------------------------------------------- RequestVote Receiver implementation
 
 	// (1) don't grant if term < currentTerm (§5.1)
 	if args.Term < rf.currentTerm{
@@ -276,11 +285,30 @@ type AppendEntriesReply struct{
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply){
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if args.Term > rf.currentTerm{
+
+	// -------------------------------------------------------------------------------- Rules for all servers
+	currentTerm := rf.currentTerm
+	reply.Term = currentTerm
+	if args.Term > currentTerm {
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
 		rf.state = Follower
 	}
+
+	//  -------------------------------------------------------------------------------- AppendEntries Receiver implementation
+	//  1. Reply false if term < currentTerm (5.1)
+	if args.Term < currentTerm{
+		reply.Success = false
+		return
+	}
+	// 2. Reply false if log doesn’t contain an entry at prevLogIndex
+	//    whose term matches prevLogTerm (5.3)
+	reply.Success = true
+	// 3. If an existing entry conflicts with a new one (same index but different terms),
+	//    delete the existing entry and all that follow it (§5.3)
+	// 4. Append any new entries not already in the log
+	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+
 	rf.lastHeartbeatTimestamp = time.Now()
 }
 
@@ -386,9 +414,10 @@ func (rf *Raft) ticker() {
 			args.CandidateId = rf.me
 			args.LastLogIndex = lastLogIdx
 			args.LastLogTerm = lastLogTerm
-			// request from all other servers
+			// request from all other servers: release lock while sending and waiting for RPC
 			numServers := len(rf.peers)
 			ch := make(chan bool)
+			rf.mu.Unlock()
 			for server := 0; server < numServers; server++ {
 				if (server == rf.me) {
 					continue
@@ -399,13 +428,12 @@ func (rf *Raft) ticker() {
 					ch <- reply.VoteGranted
 				}(server, args, reply)
 			}
-			// release lock and listen on ch for votes, with timeout
-			rf.mu.Unlock()
+			// listen on ch for votes, with timeout
 			resultsReceived := 0
 			votesWon := 1 // self-vote
 			timeout := make(chan bool, 1)
 			go func() {
-				time.Sleep(1 * time.Second)
+				time.Sleep(ELECTION_TIMEOUT * time.Millisecond)
 				timeout <- true
 			}()
 			timedOut := false
@@ -426,7 +454,10 @@ func (rf *Raft) ticker() {
 			if votesWon > len(rf.peers) / 2 {
 				DPrintf("candidate %d won, its term is %d", rf.me, rf.currentTerm)
 				rf.state = Leader
+				// release lock, send everyone heartbeats right after winning, reclaim lock
+				rf.mu.Unlock()
 				rf.sendHeartbeats()
+				rf.mu.Lock()
 			} else{
 				DPrintf("candidate %d lost", rf.me)
 				rf.state = Follower
@@ -440,6 +471,10 @@ func (rf *Raft) ticker() {
 }
 
 func (rf *Raft) sendHeartbeats() {
+	// send heartbeats to all other servers
+	// called from: (1) long-running sendHeartbeats goroutine
+	//              (2) after a new leader wins election
+	// NOTE: don't hold rf lock before calling this helper fn: it makes network RPC
 	numServers := len(rf.peers)
 	for server := 0; server < numServers; server++ {
 		if (server == rf.me) {
@@ -452,6 +487,13 @@ func (rf *Raft) sendHeartbeats() {
 		go func(server int, args AppendEntriesArgs, reply AppendEntriesReply) {
 			// DPrintf("rf %d is sending heartbeat to %d\n", rf.me, server)
 			rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
+			rf.mu.Lock()
+			if reply.Term > rf.currentTerm {
+				rf.currentTerm = reply.Term
+				rf.votedFor = -1
+				rf.state = Follower
+			}
+			rf.mu.Unlock()
 		}(server, args, reply)
 	}
 }
@@ -466,7 +508,7 @@ func (rf *Raft) heartbeats() {
 		if amLeader {
 			rf.sendHeartbeats()
 		}
-        rf.mu.Unlock()
+		rf.mu.Unlock()
 		time.Sleep(time.Duration(HEARTBEAT_INTERVAL) * time.Millisecond)
 	}
 }
