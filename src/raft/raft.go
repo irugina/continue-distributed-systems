@@ -101,6 +101,8 @@ type Raft struct {
 	nextIndex   []int
 	matchIndex  []int
 
+	appendEntriesStepDownChannel chan bool
+
 }
 
 // return currentTerm and whether this server
@@ -219,7 +221,7 @@ func (rf *Raft) GetLastLogEntryInfo() (int, int) {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	// DPrintf("server %d received request to grant vote to %d", rf.me, args.CandidateId)
+	// DPrintf("server %d received request to grant vote to %d\n", rf.me, args.CandidateId)
 	reply.VoteGranted = false // default
 
 	// -------------------------------------------------------------------------------- Rules for all servers
@@ -231,7 +233,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.state = Follower
 	}
 
-	//  ------------------------------------------------------------------------------- RequestVote Receiver implementation
+	//  ------------------------------------------------------------------------------- RequestVote Receiver implementation (figure 2)
 
 	// (1) don't grant if term < currentTerm (§5.1)
 	if args.Term < currentTerm{
@@ -295,7 +297,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.state = Follower
 	}
 
-	//  ------------------------------------------------------------------------------- AppendEntries Receiver implementation
+	// If the leader’s term (included in its RPC) is at least as large as the candidate’s current term
+	// then the candidate recognizes the leader as legitimate and returns to follower state
+	if rf.state == Candidate && args.Term >= currentTerm{
+		DPrintf("candidate %d (term %d) got heartbeat from leader %d (term %d): step down\n", rf.me, currentTerm, args.LeaderId, args.Term)
+		rf.currentTerm = args.Term
+		rf.votedFor = -1
+		rf.state = Follower
+		rf.appendEntriesStepDownChannel <- true
+	}
+
+	//  ------------------------------------------------------------------------------- AppendEntries Receiver implementation (figure 2)
 	//  1. Reply false if term < currentTerm (5.1)
 	if args.Term < currentTerm{
 		reply.Success = false
@@ -401,12 +413,12 @@ func (rf *Raft) ticker() {
 		rf.mu.Lock()
 		amLeader := rf.state == Leader
 		if !amLeader && time.Since(rf.lastHeartbeatTimestamp).Milliseconds() > ELECTION_TIMEOUT{
-			DPrintf("rf %d converted to candidate\n", rf.me)
 			// convert to candidate and start election
 			rf.state = Candidate
 			rf.currentTerm += 1
 			rf.votedFor = rf.me
 			rf.lastHeartbeatTimestamp = time.Now()
+			DPrintf("rf %d converted to candidate, new term is %d \n", rf.me, rf.currentTerm)
 			// args for RequestVote RPC
 			lastLogIdx, lastLogTerm := rf.GetLastLogEntryInfo()
 			args := RequestVoteArgs{}
@@ -429,10 +441,12 @@ func (rf *Raft) ticker() {
 					voteChannel <- reply.VoteGranted
 					rf.mu.Lock()
 					if reply.Term > rf.currentTerm {
+						DPrintf("candidate %d (term %d) send RequestVoteRPC to server %d (term %d): step down\n", rf.me, rf.currentTerm, server, reply.Term)
 						rf.currentTerm = reply.Term
 						rf.votedFor = -1
 						rf.state = Follower
 						giveUpChannel <- true
+
 					}
 					rf.mu.Unlock()
 				}(server, args, reply)
@@ -454,20 +468,22 @@ func (rf *Raft) ticker() {
 					}
 				case <-giveUpChannel:
 					giveUp = true
+				case <- rf.appendEntriesStepDownChannel:
+					giveUp = true
 				}
 			}
 			// see if i won or lost election
 			rf.mu.Lock()
 			// DPrintf("candidate %d has %d votes\n", rf.me, votesWon)
 			if votesWon > len(rf.peers) / 2 {
-				DPrintf("candidate %d won, its term is %d", rf.me, rf.currentTerm)
+				DPrintf("candidate %d won, its term is %d\n", rf.me, rf.currentTerm)
 				rf.state = Leader
 				// release lock, send everyone heartbeats right after winning, reclaim lock
 				rf.mu.Unlock()
 				rf.sendHeartbeats()
 				rf.mu.Lock()
 			} else{
-				DPrintf("candidate %d lost", rf.me)
+				DPrintf("candidate %d lost\n", rf.me)
 				rf.state = Follower
 				rf.votedFor = -1
 			}
@@ -484,6 +500,8 @@ func (rf *Raft) sendHeartbeats() {
 	//              (2) after a new leader wins election
 	// NOTE: don't hold rf lock before calling this helper fn
 	numServers := len(rf.peers)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	for server := 0; server < numServers; server++ {
 		if (server == rf.me) {
 			continue
@@ -546,6 +564,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastHeartbeatTimestamp = time.Now()
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+
+	rf.appendEntriesStepDownChannel = make(chan bool)
+
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
