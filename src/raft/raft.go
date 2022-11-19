@@ -180,6 +180,31 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
+
+
+// returns index and term of last log entry
+// or (-1, -1) if log is empty
+// assumes caller acquired lock on rf
+func (rf *Raft) GetLastLogEntryInfo() (int, int) {
+	var lastLogIdx, lastLogTerm int
+	if (len(rf.log) > 0) {
+		lastLogIdx = len(rf.log) - 1
+		lastLogTerm = rf.log[lastLogIdx].TermReceivedByLeader
+	} else {
+		lastLogIdx = -1
+		lastLogTerm = -1
+	}
+	return lastLogIdx, lastLogTerm
+}
+
+func (rf *Raft) StepDown(newTerm int) {
+	rf.currentTerm = newTerm
+	rf.votedFor = -1
+	rf.state = Follower
+
+}
+
+
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
@@ -200,20 +225,6 @@ type RequestVoteReply struct {
 	VoteGranted bool
 }
 
-// returns index and term of last log entry
-// or (-1, -1) if log is empty
-// assumes caller acquired lock on rf
-func (rf *Raft) GetLastLogEntryInfo() (int, int) {
-	var lastLogIdx, lastLogTerm int
-	if (len(rf.log) > 0) {
-		lastLogIdx = len(rf.log) - 1
-		lastLogTerm = rf.log[lastLogIdx].TermReceivedByLeader
-	} else {
-		lastLogIdx = -1
-		lastLogTerm = -1
-	}
-	return lastLogIdx, lastLogTerm
-}
 
 //
 // example RequestVote RPC handler.
@@ -228,9 +239,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	currentTerm := rf.currentTerm
 	reply.Term = currentTerm
 	if args.Term > currentTerm {
-		rf.currentTerm = args.Term
-		rf.votedFor = -1
-		rf.state = Follower
+		rf.StepDown(args.Term)
 	}
 
 	//  ------------------------------------------------------------------------------- RequestVote Receiver implementation (figure 2)
@@ -292,18 +301,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	currentTerm := rf.currentTerm
 	reply.Term = currentTerm
 	if args.Term > currentTerm {
-		rf.currentTerm = args.Term
-		rf.votedFor = -1
-		rf.state = Follower
+		DPrintf("server %d, in state %v and term %d, is about to update its state to Follower and term to %d", rf.me, rf.state, rf.currentTerm, args.Term)
+		rf.StepDown(args.Term)
 	}
 
 	// If the leader’s term (included in its RPC) is at least as large as the candidate’s current term
 	// then the candidate recognizes the leader as legitimate and returns to follower state
 	if rf.state == Candidate && args.Term >= currentTerm{
 		DPrintf("candidate %d (term %d) got heartbeat from leader %d (term %d): step down\n", rf.me, currentTerm, args.LeaderId, args.Term)
-		rf.currentTerm = args.Term
-		rf.votedFor = -1
-		rf.state = Follower
+		rf.StepDown(args.Term)
 		rf.appendEntriesStepDownChannel <- true
 	}
 
@@ -442,9 +448,7 @@ func (rf *Raft) ticker() {
 					rf.mu.Lock()
 					if reply.Term > rf.currentTerm {
 						DPrintf("candidate %d (term %d) send RequestVoteRPC to server %d (term %d): step down\n", rf.me, rf.currentTerm, server, reply.Term)
-						rf.currentTerm = reply.Term
-						rf.votedFor = -1
-						rf.state = Follower
+						rf.StepDown(reply.Term)
 						giveUpChannel <- true
 
 					}
@@ -511,9 +515,7 @@ func (rf *Raft) sendHeartbeats() {
 			rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
 			rf.mu.Lock()
 			if reply.Term > rf.currentTerm {
-				rf.currentTerm = reply.Term
-				rf.votedFor = -1
-				rf.state = Follower
+				rf.StepDown(reply.Term)
 			}
 			rf.mu.Unlock()
 		}(server, args, reply)
