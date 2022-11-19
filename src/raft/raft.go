@@ -231,10 +231,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.state = Follower
 	}
 
-	//  -------------------------------------------------------------------------------- RequestVote Receiver implementation
+	//  ------------------------------------------------------------------------------- RequestVote Receiver implementation
 
 	// (1) don't grant if term < currentTerm (§5.1)
-	if args.Term < rf.currentTerm{
+	if args.Term < currentTerm{
 		DPrintf("rf %d is NOT granting vote to %d (bc of current term)\n", rf.me, args.CandidateId)
 		return
 	}
@@ -295,7 +295,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.state = Follower
 	}
 
-	//  -------------------------------------------------------------------------------- AppendEntries Receiver implementation
+	//  ------------------------------------------------------------------------------- AppendEntries Receiver implementation
 	//  1. Reply false if term < currentTerm (5.1)
 	if args.Term < currentTerm{
 		reply.Success = false
@@ -416,7 +416,8 @@ func (rf *Raft) ticker() {
 			args.LastLogTerm = lastLogTerm
 			// request from all other servers: release lock while sending and waiting for RPC
 			numServers := len(rf.peers)
-			ch := make(chan bool)
+			voteChannel := make(chan bool)
+			giveUpChannel := make(chan bool)
 			rf.mu.Unlock()
 			for server := 0; server < numServers; server++ {
 				if (server == rf.me) {
@@ -425,27 +426,34 @@ func (rf *Raft) ticker() {
 				reply := RequestVoteReply{}
 				go func(server int, args RequestVoteArgs, reply RequestVoteReply) {
 					rf.sendRequestVote(server, &args, &reply)
-					ch <- reply.VoteGranted
+					voteChannel <- reply.VoteGranted
+					rf.mu.Lock()
+					if reply.Term > rf.currentTerm {
+						rf.currentTerm = reply.Term
+						rf.votedFor = -1
+						rf.state = Follower
+						giveUpChannel <- true
+					}
+					rf.mu.Unlock()
 				}(server, args, reply)
 			}
-			// listen on ch for votes, with timeout
+			// listen on voteChannel for votes and giveUpChannel for timeout or new leaders
 			resultsReceived := 0
 			votesWon := 1 // self-vote
-			timeout := make(chan bool, 1)
 			go func() {
 				time.Sleep(ELECTION_TIMEOUT * time.Millisecond)
-				timeout <- true
+				giveUpChannel <- true
 			}()
-			timedOut := false
-			for (resultsReceived < len(rf.peers) - 1 && votesWon <= len(rf.peers)/2 && !timedOut){
+			giveUp := false
+			for (resultsReceived < len(rf.peers) - 1 && votesWon <= len(rf.peers)/2 && !giveUp){
 				select {
-				case newResult := <-ch:
+				case newResult := <-voteChannel:
 					resultsReceived += 1
 					if newResult {
 						votesWon += 1
 					}
-				case <-timeout:
-					timedOut = true
+				case <-giveUpChannel:
+					giveUp = true
 				}
 			}
 			// see if i won or lost election
@@ -474,7 +482,7 @@ func (rf *Raft) sendHeartbeats() {
 	// send heartbeats to all other servers
 	// called from: (1) long-running sendHeartbeats goroutine
 	//              (2) after a new leader wins election
-	// NOTE: don't hold rf lock before calling this helper fn: it makes network RPC
+	// NOTE: don't hold rf lock before calling this helper fn
 	numServers := len(rf.peers)
 	for server := 0; server < numServers; server++ {
 		if (server == rf.me) {
