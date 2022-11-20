@@ -443,13 +443,9 @@ func (rf *Raft) ticker() {
 				go func(server int, args RequestVoteArgs, reply RequestVoteReply) {
 					rf.sendRequestVote(server, &args, &reply)
 					voteChannel <- reply.VoteGranted
-					rf.mu.Lock()
 					if reply.Term > rf.currentTerm {
-						DPrintf("candidate %d (term %d) send RequestVoteRPC to server %d (term %d): step down\n", rf.me, rf.currentTerm, server, reply.Term)
 						requestedHigherTermChannel <- reply.Term
-
 					}
-					rf.mu.Unlock()
 				}(server, args, reply)
 			}
 			// listen for: (1) votes, (2) timeouts, (3) AppendEntries for new leader, (4) if we requested from someone in higher term
