@@ -443,7 +443,7 @@ func (rf *Raft) ticker() {
 				go func(server int, args RequestVoteArgs, reply RequestVoteReply) {
 					rf.sendRequestVote(server, &args, &reply)
 					voteChannel <- reply.VoteGranted
-					if reply.Term > rf.currentTerm {
+					if reply.Term > args.Term {
 						requestedHigherTermChannel <- reply.Term
 					}
 				}(server, args, reply)
