@@ -473,7 +473,6 @@ func (rf *Raft) ticker() {
 			if votesWon > len(rf.peers) / 2 {
 				DPrintf("candidate %d won, its term is %d\n", rf.me, rf.currentTerm)
 				rf.state = Leader
-				// release lock, send everyone heartbeats right after winning, reclaim lock
 				rf.sendHeartbeats()
 			}
 		}
@@ -487,7 +486,10 @@ func (rf *Raft) sendHeartbeats() {
 	// send heartbeats to all other servers
 	// called from: (1) long-running sendHeartbeats goroutine
 	//              (2) after a new leader wins election
-	// NOTE: hold rf lock before calling this helper fn
+	// NOTES: (1) hold rf lock before calling this helper fn
+	//        (2) the goroutines launched here will each want to hold the lock after it makes a network call
+	//        (3) i think it's fine because the callers of sendHeartbeats
+	//            both release the lock on rf right after sendHeartbeats returns
 	numServers := len(rf.peers)
 	for server := 0; server < numServers; server++ {
 		if (server == rf.me) {
