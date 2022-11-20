@@ -101,8 +101,6 @@ type Raft struct {
 	nextIndex   []int
 	matchIndex  []int
 
-	appendEntriesStepDownChannel chan int
-
 }
 
 // return currentTerm and whether this server
@@ -309,7 +307,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// then the candidate recognizes the leader as legitimate and returns to follower state
 	if rf.state == Candidate && args.Term >= currentTerm{
 		DPrintf("candidate %d (term %d) got heartbeat from leader %d (term %d): step down\n", rf.me, currentTerm, args.LeaderId, args.Term)
-		rf.appendEntriesStepDownChannel <- args.Term
+		rf.UpdateTerm(args.Term)
 	}
 
 	//  ------------------------------------------------------------------------------- AppendEntries Receiver implementation (figure 2)
@@ -431,7 +429,7 @@ func (rf *Raft) ticker() {
 			args.CandidateId = rf.me
 			args.LastLogIndex = lastLogIdx
 			args.LastLogTerm = lastLogTerm
-			// request from all other servers: release lock while sending and waiting for RPC
+			// request from all other servers
 			numServers := len(rf.peers)
 			voteChannel := make(chan bool)
 			requestedHigherTermChannel := make(chan int)
@@ -448,7 +446,7 @@ func (rf *Raft) ticker() {
 					}
 				}(server, args, reply)
 			}
-			// listen for: (1) votes, (2) timeouts, (3) AppendEntries for new leader, (4) if we requested from someone in higher term
+			// listen for: (1) votes, (2) timeouts, (3) if we requested from someone in higher term
 			resultsReceived := 0
 			votesWon := 1 // self-vote
 			timeoutChannel := make(chan bool)
@@ -469,21 +467,14 @@ func (rf *Raft) ticker() {
 				case newTerm := <-requestedHigherTermChannel:
 					rf.UpdateTerm(newTerm)
 					giveUp = true
-				case newTerm := <-rf.appendEntriesStepDownChannel:
-					rf.UpdateTerm(newTerm)
-					giveUp = true
 				}
 			}
-			// see if i won or lost election
+			// see if i won
 			if votesWon > len(rf.peers) / 2 {
 				DPrintf("candidate %d won, its term is %d\n", rf.me, rf.currentTerm)
 				rf.state = Leader
 				// release lock, send everyone heartbeats right after winning, reclaim lock
 				rf.sendHeartbeats()
-			} else{
-				DPrintf("candidate %d lost\n", rf.me)
-				rf.state = Follower
-				rf.votedFor = -1
 			}
 		}
 		rf.mu.Unlock()
@@ -558,8 +549,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastHeartbeatTimestamp = time.Now()
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-
-	rf.appendEntriesStepDownChannel = make(chan int)
 
 
 	// start ticker goroutine to start elections
