@@ -196,10 +196,10 @@ func (rf *Raft) GetLastLogEntryInfo() (int, int) {
 }
 
 func (rf *Raft) UpdateTerm(newTerm int) {
+	DPrintf("during RPC, server %d found out it is behind, and goes from term %d to term %d", rf.me, rf.currentTerm, newTerm)
 	rf.currentTerm = newTerm
 	rf.votedFor = -1
 	rf.state = Follower
-
 }
 
 
@@ -299,15 +299,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	currentTerm := rf.currentTerm
 	reply.Term = currentTerm
 	if args.Term > currentTerm {
-		DPrintf("server %d, in state %v and term %d, is about to update its state to Follower and term to %d", rf.me, rf.state, rf.currentTerm, args.Term)
 		rf.UpdateTerm(args.Term)
 	}
 
 	// If the leader’s term (included in its RPC) is at least as large as the candidate’s current term
 	// then the candidate recognizes the leader as legitimate and returns to follower state
-	if rf.state == Candidate && args.Term >= currentTerm{
+	if rf.state == Candidate && args.Term == currentTerm{
 		DPrintf("candidate %d (term %d) got heartbeat from leader %d (term %d): step down\n", rf.me, currentTerm, args.LeaderId, args.Term)
-		rf.UpdateTerm(args.Term)
+		rf.votedFor = -1
+		rf.state = Follower
 	}
 
 	//  ------------------------------------------------------------------------------- AppendEntries Receiver implementation (figure 2)
