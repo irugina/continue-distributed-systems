@@ -101,7 +101,7 @@ type Raft struct {
 	nextIndex   []int
 	matchIndex  []int
 
-	appendEntriesStepDownChannel chan bool
+	appendEntriesStepDownChannel chan int
 
 }
 
@@ -197,7 +197,7 @@ func (rf *Raft) GetLastLogEntryInfo() (int, int) {
 	return lastLogIdx, lastLogTerm
 }
 
-func (rf *Raft) StepDown(newTerm int) {
+func (rf *Raft) UpdateTerm(newTerm int) {
 	rf.currentTerm = newTerm
 	rf.votedFor = -1
 	rf.state = Follower
@@ -239,14 +239,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	currentTerm := rf.currentTerm
 	reply.Term = currentTerm
 	if args.Term > currentTerm {
-		rf.StepDown(args.Term)
+		rf.UpdateTerm(args.Term)
 	}
 
 	//  ------------------------------------------------------------------------------- RequestVote Receiver implementation (figure 2)
 
 	// (1) don't grant if term < currentTerm (§5.1)
 	if args.Term < currentTerm{
-		DPrintf("rf %d is NOT granting vote to %d (bc of current term)\n", rf.me, args.CandidateId)
+		DPrintf("rf %d (term %d) is NOT granting vote to %d (term %d)\n", rf.me, currentTerm,  args.CandidateId, args.Term)
 		return
 	}
 
@@ -302,15 +302,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Term = currentTerm
 	if args.Term > currentTerm {
 		DPrintf("server %d, in state %v and term %d, is about to update its state to Follower and term to %d", rf.me, rf.state, rf.currentTerm, args.Term)
-		rf.StepDown(args.Term)
+		rf.UpdateTerm(args.Term)
 	}
 
 	// If the leader’s term (included in its RPC) is at least as large as the candidate’s current term
 	// then the candidate recognizes the leader as legitimate and returns to follower state
 	if rf.state == Candidate && args.Term >= currentTerm{
 		DPrintf("candidate %d (term %d) got heartbeat from leader %d (term %d): step down\n", rf.me, currentTerm, args.LeaderId, args.Term)
-		rf.StepDown(args.Term)
-		rf.appendEntriesStepDownChannel <- true
+		rf.appendEntriesStepDownChannel <- args.Term
 	}
 
 	//  ------------------------------------------------------------------------------- AppendEntries Receiver implementation (figure 2)
@@ -435,8 +434,7 @@ func (rf *Raft) ticker() {
 			// request from all other servers: release lock while sending and waiting for RPC
 			numServers := len(rf.peers)
 			voteChannel := make(chan bool)
-			giveUpChannel := make(chan bool)
-			rf.mu.Unlock()
+			requestedHigherTermChannel := make(chan int)
 			for server := 0; server < numServers; server++ {
 				if (server == rf.me) {
 					continue
@@ -448,19 +446,19 @@ func (rf *Raft) ticker() {
 					rf.mu.Lock()
 					if reply.Term > rf.currentTerm {
 						DPrintf("candidate %d (term %d) send RequestVoteRPC to server %d (term %d): step down\n", rf.me, rf.currentTerm, server, reply.Term)
-						rf.StepDown(reply.Term)
-						giveUpChannel <- true
+						requestedHigherTermChannel <- reply.Term
 
 					}
 					rf.mu.Unlock()
 				}(server, args, reply)
 			}
-			// listen on voteChannel for votes and giveUpChannel for timeout or new leaders
+			// listen for: (1) votes, (2) timeouts, (3) AppendEntries for new leader, (4) if we requested from someone in higher term
 			resultsReceived := 0
 			votesWon := 1 // self-vote
+			timeoutChannel := make(chan bool)
 			go func() {
 				time.Sleep(ELECTION_TIMEOUT * time.Millisecond)
-				giveUpChannel <- true
+				timeoutChannel <- true
 			}()
 			giveUp := false
 			for (resultsReceived < len(rf.peers) - 1 && votesWon <= len(rf.peers)/2 && !giveUp){
@@ -470,15 +468,17 @@ func (rf *Raft) ticker() {
 					if newResult {
 						votesWon += 1
 					}
-				case <-giveUpChannel:
+				case <- timeoutChannel:
 					giveUp = true
-				case <- rf.appendEntriesStepDownChannel:
+				case newTerm := <-requestedHigherTermChannel:
+					rf.UpdateTerm(newTerm)
+					giveUp = true
+				case newTerm := <-rf.appendEntriesStepDownChannel:
+					rf.UpdateTerm(newTerm)
 					giveUp = true
 				}
 			}
 			// see if i won or lost election
-			rf.mu.Lock()
-			// DPrintf("candidate %d has %d votes\n", rf.me, votesWon)
 			if votesWon > len(rf.peers) / 2 {
 				DPrintf("candidate %d won, its term is %d\n", rf.me, rf.currentTerm)
 				rf.state = Leader
@@ -515,7 +515,7 @@ func (rf *Raft) sendHeartbeats() {
 			rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
 			rf.mu.Lock()
 			if reply.Term > rf.currentTerm {
-				rf.StepDown(reply.Term)
+				rf.UpdateTerm(reply.Term)
 			}
 			rf.mu.Unlock()
 		}(server, args, reply)
@@ -563,7 +563,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	rf.appendEntriesStepDownChannel = make(chan bool)
+	rf.appendEntriesStepDownChannel = make(chan int)
 
 
 	// start ticker goroutine to start elections
