@@ -371,9 +371,11 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
+	rf.mu.Lock()
+	index := len(rf.log)
+	term := rf.currentTerm
+	isLeader := rf.state == Leader
+	rf.mu.Unlock()
 
 	// Your code here (2B).
 
@@ -466,7 +468,8 @@ func (rf *Raft) ticker() {
 			if votesWon > len(rf.peers) / 2 {
 				DPrintf("candidate %d won, its term is %d\n", rf.me, rf.currentTerm)
 				rf.state = Leader
-				rf.sendHeartbeats()
+				var dummy_command interface {}
+				rf.sendAppendEntriesRPCs(dummy_command)
 			}
 		}
 		rf.mu.Unlock()
@@ -475,14 +478,14 @@ func (rf *Raft) ticker() {
 	}
 }
 
-func (rf *Raft) sendHeartbeats() {
-	// send heartbeats to all other servers
+func (rf *Raft) sendAppendEntriesRPCs(command interface{}) {
+	// send AppendEntries RPCs to all other servers
 	// called from: (1) long-running heartbeats goroutine
 	//              (2) after a new leader wins election
 	// NOTES: (1) hold rf lock before calling this helper fn
 	//        (2) the goroutines launched here will each want to hold the lock after it makes a network call
-	//        (3) i think it's fine because the callers of sendHeartbeats
-	//            both release the lock on rf right after sendHeartbeats returns
+	//        (3) i think it's fine because the callers of sendAppendEntriesRPCs
+	//            all release the lock on rf right after sendAppendEntriesRPCs returns
 	numServers := len(rf.peers)
 	for server := 0; server < numServers; server++ {
 		if (server == rf.me) {
@@ -512,7 +515,8 @@ func (rf *Raft) heartbeats() {
 		rf.mu.Lock()
 		amLeader := rf.state == Leader
 		if amLeader {
-			rf.sendHeartbeats()
+			var dummy_command interface {}
+			rf.sendAppendEntriesRPCs(dummy_command)
 		}
 		rf.mu.Unlock()
 		time.Sleep(time.Duration(HEARTBEAT_INTERVAL) * time.Millisecond)
