@@ -181,17 +181,10 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 
 // returns index and term of last log entry
-// or (-1, -1) if log is empty
 // assumes caller acquired lock on rf
 func (rf *Raft) GetLastLogEntryInfo() (int, int) {
-	var lastLogIdx, lastLogTerm int
-	if (len(rf.log) > 0) {
-		lastLogIdx = len(rf.log) - 1
-		lastLogTerm = rf.log[lastLogIdx].TermReceivedByLeader
-	} else {
-		lastLogIdx = -1
-		lastLogTerm = -1
-	}
+	lastLogIdx := len(rf.log) - 1
+	lastLogTerm := rf.log[lastLogIdx].TermReceivedByLeader
 	return lastLogIdx, lastLogTerm
 }
 
@@ -484,7 +477,7 @@ func (rf *Raft) ticker() {
 
 func (rf *Raft) sendHeartbeats() {
 	// send heartbeats to all other servers
-	// called from: (1) long-running sendHeartbeats goroutine
+	// called from: (1) long-running heartbeats goroutine
 	//              (2) after a new leader wins election
 	// NOTES: (1) hold rf lock before calling this helper fn
 	//        (2) the goroutines launched here will each want to hold the lock after it makes a network call
@@ -547,8 +540,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 	rf.state = Follower
 
+	// init
+	initialEmptyLogEntry := LogEntry{}
+	rf.log = append(rf.log, initialEmptyLogEntry)
 	rf.votedFor = -1
 	rf.lastHeartbeatTimestamp = time.Now()
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
