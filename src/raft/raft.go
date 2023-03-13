@@ -181,25 +181,18 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 
 // returns index and term of last log entry
-// or (-1, -1) if log is empty
 // assumes caller acquired lock on rf
 func (rf *Raft) GetLastLogEntryInfo() (int, int) {
-	var lastLogIdx, lastLogTerm int
-	if (len(rf.log) > 0) {
-		lastLogIdx = len(rf.log) - 1
-		lastLogTerm = rf.log[lastLogIdx].TermReceivedByLeader
-	} else {
-		lastLogIdx = -1
-		lastLogTerm = -1
-	}
+	lastLogIdx := len(rf.log) - 1
+	lastLogTerm := rf.log[lastLogIdx].TermReceivedByLeader
 	return lastLogIdx, lastLogTerm
 }
 
 func (rf *Raft) UpdateTerm(newTerm int) {
+	DPrintf("during RPC, server %d found out it is behind, and goes from term %d to term %d", rf.me, rf.currentTerm, newTerm)
 	rf.currentTerm = newTerm
 	rf.votedFor = -1
 	rf.state = Follower
-
 }
 
 
@@ -299,15 +292,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	currentTerm := rf.currentTerm
 	reply.Term = currentTerm
 	if args.Term > currentTerm {
-		DPrintf("server %d, in state %v and term %d, is about to update its state to Follower and term to %d", rf.me, rf.state, rf.currentTerm, args.Term)
 		rf.UpdateTerm(args.Term)
 	}
 
 	// If the leader’s term (included in its RPC) is at least as large as the candidate’s current term
 	// then the candidate recognizes the leader as legitimate and returns to follower state
-	if rf.state == Candidate && args.Term >= currentTerm{
+	if rf.state == Candidate && args.Term == currentTerm{
 		DPrintf("candidate %d (term %d) got heartbeat from leader %d (term %d): step down\n", rf.me, currentTerm, args.LeaderId, args.Term)
-		rf.UpdateTerm(args.Term)
+		rf.votedFor = -1
+		rf.state = Follower
 	}
 
 	//  ------------------------------------------------------------------------------- AppendEntries Receiver implementation (figure 2)
@@ -484,7 +477,7 @@ func (rf *Raft) ticker() {
 
 func (rf *Raft) sendHeartbeats() {
 	// send heartbeats to all other servers
-	// called from: (1) long-running sendHeartbeats goroutine
+	// called from: (1) long-running heartbeats goroutine
 	//              (2) after a new leader wins election
 	// NOTES: (1) hold rf lock before calling this helper fn
 	//        (2) the goroutines launched here will each want to hold the lock after it makes a network call
@@ -547,8 +540,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 	rf.state = Follower
 
+	// init
+	initialEmptyLogEntry := LogEntry{}
+	rf.log = append(rf.log, initialEmptyLogEntry)
 	rf.votedFor = -1
 	rf.lastHeartbeatTimestamp = time.Now()
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
